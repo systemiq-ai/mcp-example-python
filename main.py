@@ -1,28 +1,20 @@
 import logging
-from fastapi import FastAPI
-from starlette.routing import Mount
+import uvicorn
 from mcp.server.fastmcp import FastMCP
-
-#from auth import AuthMiddleware
 from auth import AuthMiddleware, auth_token, auth_payload
 
-app = FastAPI()
-
-# Initialize MCP server
 mcp = FastMCP("My Tool Server")
 
 @mcp.tool()
 def greet(name: str) -> str:
-    # If needed, grab the values from the ContextVars
-    #token   = auth_token.get()
+    token = auth_token.get()
     payload = auth_payload.get()
-
-    logging.info(f"Hello, {name}! Payload: {payload}")
+    logging.info(f"Hello, {name}! Token: {token!r}, Payload: {payload}")
     return f"Hello, {name}!"
 
-protected_mcp_app = AuthMiddleware(mcp.sse_app())
+# Wrap the Starlette app that serves SSE + POST /messages
+app = AuthMiddleware(mcp.sse_app())
 
-# Register protected app
-app.router.routes.append(
-    Mount("/", app=protected_mcp_app)
-)
+if __name__ == "__main__":
+    # expose over HTTP(SSE). Map ports as you like (e.g., 8001:8000 in Docker)
+    uvicorn.run(app, host="0.0.0.0", port=8000)

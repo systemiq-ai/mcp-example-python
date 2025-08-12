@@ -1,26 +1,27 @@
-# MCP Example with Auth Integration
+# About MCP
 
 MCP is an open protocol that standardizes how applications provide context to LLMs. Systemiq integrates MCP (Model Context Protocol) to enable secure, real-time interaction between agents and server-side resources. With MCP, models can dynamically fetch context-specific information or send data back to your backend for advanced processing and analysis. This interaction is governed by Systemiq’s robust authentication mechanism to ensure safe and reliable operations.
 
-- **Fetch Data**: Expose server-side data sources that the model can query in real time, enabling dynamic context injection during reasoning or task execution.
-- **Process Data**: Handle data transformations or trigger business logic, allowing the model to initiate actions or workflows on the backend.
-- **Authentication**: Secure endpoints with Systemiq‘s robust authentication layer.
+# MCP Example with Auth Integration
 
-This project includes a Python example: the MCP Greeting Tool.
+This repo shows how to run a **Model Context Protocol (MCP)** server over **SSE** and protect it with **JWT-based authentication**.
+Authentication happens in a lightweight **ASGI middleware** that validates the incoming `Authorization: Bearer <token>` header and exposes the decoded payload to MCP tools safely via **ContextVars** (isolated per request).
 
-This example demonstrates a minimal FastAPI application using `FastMCP` with integrated JWT-based authentication middleware.
-
-## Features
-
-- Runs a FastAPI server with `FastMCP` integration
-- Provides a simple tool endpoint (`/greet`) with token-protected SSE access
-- Uses JWT validation middleware that checks client ID and scope
+* **Secure SSE**: Every MCP request must provide a valid bearer token
+* **Tools**: Example `greet` tool that can read the token payload
+* **Concurrency-safe auth**: Token & payload are stored in ContextVars (no cross-request leakage)
 
 ## Requirements
 
-- Python 3.13+
-- Valid JWT tokens with `client_super` scope
-- Environment variables for `PUBLIC_KEY` and `CLIENT_IDS`
+* Python 3.13+
+* A valid RS256 JWT (must include:
+
+  * `client_id` in `CLIENT_IDS`
+  * `scopes` including `"client_super"`)
+* Env vars:
+
+  * `PUBLIC_KEY` (PEM string for RS256)
+  * `CLIENT_IDS` (comma-separated IDs, e.g. `1,2,3`)
 
 ## Setup
 
@@ -30,63 +31,102 @@ Install dependencies:
 pip install -r requirements.txt
 ```
 
-Set required environment variables:
+Export environment variables:
 
 ```bash
-export PUBLIC_KEY="your-RS256-public-key"
+export PUBLIC_KEY="-----BEGIN PUBLIC KEY-----
+...your RS256 public key...
+-----END PUBLIC KEY-----"
 export CLIENT_IDS="1,2,3"
 ```
 
-## Usage
+## Run
 
-Run the app:
+You can run either way:
 
 ```bash
+# direct
 python main.py
-```
 
-To start in development mode with hot-reload:
-
-```bash
+# or with uvicorn (dev hot-reload)
 ENVIRONMENT=development uvicorn main:app --reload
 ```
 
+The app serves an **SSE endpoint** and a **messages endpoint** used by MCP clients:
+
+* `GET /sse` – opens the SSE stream (must include `Authorization` header)
+* `POST /messages/?session_id=...` – JSON-RPC messages for MCP (same auth header)
+
+Both endpoints are protected by the JWT middleware.
+
+## How Authentication Works
+
+* A custom ASGI middleware validates the `Authorization: Bearer <token>` header:
+
+  * Verifies RS256 signature using `PUBLIC_KEY`
+  * Checks `client_id` ∈ `CLIENT_IDS`
+  * Requires `"client_super"` in `scopes`
+* On success, it stores the **raw token** and **decoded payload** in **ContextVars**:
+
+  * `auth_token: ContextVar[str | None]`
+  * `auth_payload: ContextVar[dict]`
+* In your MCP tools, you read these without touching HTTP/Starlette objects:
+
+  * This is **safe under concurrency**: ContextVars are isolated per request.
+
+### Example Tool
+
+```python
+from mcp.server.fastmcp import FastMCP, Context
+from auth import auth_token, auth_payload  # ContextVars set by middleware
+
+mcp = FastMCP("My Tool Server")
+
+@mcp.tool()
+def greet(name: str, ctx: Context) -> str:
+    token   = auth_token.get()
+    payload = auth_payload.get()
+    # Use payload as needed (e.g., enforce scopes, log client_id, etc.)
+    # logging.info(f"greet -> token: {bool(token)}, payload: {payload}")
+    return f"Hello, {name}!"
+```
+
+> Note: We do **not** rely on `ctx.session` or HTTP state; tools remain transport-agnostic.
+
+## Connecting a Client
+
+Any MCP client that supports SSE + JSON-RPC can connect. Be sure to pass the `Authorization` header. For example, using a custom client:
+
+* Open SSE at `GET /sse` with `Authorization: Bearer <token>`
+* Send MCP requests to `POST /messages/?session_id=<id>` with the same header
+
+(If you’re using a higher-level MCP client library, set its **SSE headers** to include your bearer token.)
+
 ## Docker
 
-A `Dockerfile` is included for containerized execution.
+A `Dockerfile` is included.
 
-### Build the image
+### Build
 
 ```bash
 docker build -t mcp-example .
 ```
 
-### Run the container
+### Run
 
 ```bash
 docker run --rm \
-  -e PUBLIC_KEY="your-RS256-public-key" \
+  -e PUBLIC_KEY="-----BEGIN PUBLIC KEY-----\n...\n-----END PUBLIC KEY-----" \
   -e CLIENT_IDS="1" \
   -p 8000:8000 \
   mcp-example
 ```
 
-## Endpoint
+## Notes & Guarantees
 
-Once running, the following endpoint is available:
-
-- `GET /` – Connects to the SSE interface, requires `Authorization: Bearer <token>` header
-
-Example tool:
-
-- `greet(name: str) -> str`: Returns a greeting using the authenticated token payload
-
-## Token Authentication
-
-The app uses a custom ASGI middleware that verifies JWTs passed in the `Authorization` header. Tokens must be signed with RS256 and include:
-
-- `client_id` matching one of the `CLIENT_IDS`
-- `scopes` including `"client_super"`
+* **Isolation**: ContextVars ensure each request sees only its own `token`/`payload`.
+* **No framework coupling**: Tools don’t need direct access to HTTP request objects.
+* **Scopes**: By default, the middleware requires `"client_super"`; adapt as needed.
 
 ## Further Information
 

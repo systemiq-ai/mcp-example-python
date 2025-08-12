@@ -1,4 +1,3 @@
-fastapi
 mcp[server]
 python-jose
 uvicorn
