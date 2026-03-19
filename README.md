@@ -1,15 +1,12 @@
-# About MCP
-
-MCP is an open protocol that standardizes how applications provide context to LLMs. Systemiq integrates MCP (Model Context Protocol) to enable secure, real-time interaction between agents and server-side resources. With MCP, models can dynamically fetch context-specific information or send data back to your backend for advanced processing and analysis. This interaction is governed by Systemiq’s robust authentication mechanism to ensure safe and reliable operations.
-
 # MCP Example with Auth Integration
 
-This repo shows how to run a **Model Context Protocol (MCP)** server over **SSE** and protect it with **JWT-based authentication**.
+This repo shows how to run a **Model Context Protocol (MCP)** server over **streamable HTTP** and protect it with **JWT-based authentication**.
 Authentication happens in a lightweight **ASGI middleware** that validates the incoming `Authorization: Bearer <token>` header and exposes the decoded payload to MCP tools safely via **ContextVars** (isolated per request).
 
-* **Secure SSE**: Every MCP request must provide a valid bearer token
-* **Tools**: Example `greet` tool that can read the token payload
+* **Secure MCP over HTTP**: Every MCP request must provide a valid bearer token
+* **Tools**: Example `greet` and `extension` tools that can read the token payload
 * **Concurrency-safe auth**: Token & payload are stored in ContextVars (no cross-request leakage)
+* **Host protection**: FastMCP transport security only allows local hosts such as `host.docker.internal`, `localhost`, and `127.0.0.1`
 
 ## Requirements
 
@@ -52,12 +49,12 @@ python main.py
 ENVIRONMENT=development uvicorn main:app --reload
 ```
 
-The app serves an **SSE endpoint** and a **messages endpoint** used by MCP clients:
+The app serves a **streamable HTTP MCP endpoint**:
 
-* `GET /sse` – opens the SSE stream (must include `Authorization` header)
-* `POST /messages/?session_id=...` – JSON-RPC messages for MCP (same auth header)
+* `POST /mcp` – JSON-RPC requests for MCP
+* `GET /mcp` – optional long-lived stream / notifications when supported by the client library
 
-Both endpoints are protected by the JWT middleware.
+All MCP HTTP requests are protected by the JWT middleware.
 
 ## How Authentication Works
 
@@ -74,33 +71,32 @@ Both endpoints are protected by the JWT middleware.
 
   * This is **safe under concurrency**: ContextVars are isolated per request.
 
-### Example Tool
+### Example Tools
 
 ```python
-from mcp.server.fastmcp import FastMCP, Context
+from mcp.server.fastmcp import FastMCP
 from auth import auth_token, auth_payload  # ContextVars set by middleware
 
 mcp = FastMCP("My Tool Server")
 
 @mcp.tool()
-def greet(name: str, ctx: Context) -> str:
+def greet(name: str) -> str:
     token   = auth_token.get()
     payload = auth_payload.get()
     # Use payload as needed (e.g., enforce scopes, log client_id, etc.)
-    # logging.info(f"greet -> token: {bool(token)}, payload: {payload}")
     return f"Hello, {name}!"
 ```
 
-> Note: We do **not** rely on `ctx.session` or HTTP state; tools remain transport-agnostic.
+```python
+@mcp.tool()
+def extension(config: object, data: list, action: str) -> bool:
+    token = auth_token.get()
+    payload = auth_payload.get()
+    return True
+```
 
-## Connecting a Client
+> Note: We do **not** rely on HTTP request objects in the tools; they remain transport-agnostic.
 
-Any MCP client that supports SSE + JSON-RPC can connect. Be sure to pass the `Authorization` header. For example, using a custom client:
-
-* Open SSE at `GET /sse` with `Authorization: Bearer <token>`
-* Send MCP requests to `POST /messages/?session_id=<id>` with the same header
-
-(If you’re using a higher-level MCP client library, set its **SSE headers** to include your bearer token.)
 
 ## Docker
 
@@ -127,6 +123,7 @@ docker run --rm \
 * **Isolation**: ContextVars ensure each request sees only its own `token`/`payload`.
 * **No framework coupling**: Tools don’t need direct access to HTTP request objects.
 * **Scopes**: By default, the middleware requires `"client_super"`; adapt as needed.
+* **Host validation**: FastMCP rejects unexpected `Host` headers unless they are listed in `allowed_hosts`.
 
 ## Further Information
 
