@@ -1,16 +1,23 @@
 import contextvars
 from typing import Any
-from starlette.responses import JSONResponse
-from jose import jwt, ExpiredSignatureError, JWTError
-from starlette.config import Config
 
-auth_token   = contextvars.ContextVar[str | None]("auth_token", default=None)
+from jose import ExpiredSignatureError, JWTError, jwt
+from starlette.config import Config
+from starlette.responses import JSONResponse
+
+
+auth_token = contextvars.ContextVar[str | None]("auth_token", default=None)
 auth_payload = contextvars.ContextVar[dict]("auth_payload", default={})
 
 config = Config(env_file=None)
 PUBLIC_KEY = config("PUBLIC_KEY")
-CLIENT_IDS = config("CLIENT_IDS", cast=lambda v: [int(x) for x in v.split(",")] if v else [], default="")
+CLIENT_IDS = config(
+    "CLIENT_IDS",
+    cast=lambda v: [int(x) for x in v.split(",")] if v else [],
+    default="",
+)
 ALGORITHM = "RS256"
+
 
 def verify_token(token: str) -> dict:
     try:
@@ -32,9 +39,11 @@ def verify_token(token: str) -> dict:
     except JWTError:
         raise ValueError("Invalid token")
 
+
 class AuthMiddleware:
     """ASGI middleware that validates JWT on plain HTTP requests.
        Uses ContextVars so each concurrent request gets its own values."""
+
     def __init__(self, app):
         self.app = app
 
